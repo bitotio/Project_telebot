@@ -75,20 +75,6 @@ STICKERS = {
         "CAACAgIAAxkBAAEBL-Nn6lkZ7MFhFH7SsrWG0-RepGg9iQAC1AwAAnqLoEieLyIklDO8mzYE"
     ],
 
-    "correct": [
-        "CAACAgIAAxkBAAEBL-9n6lmv8bgTjgAB28BYiMBoYp3Re0kAAmgNAAK0oaFIHliZ98qHA0E2BA",
-        "CAACAgIAAxkBAAEBL_Fn6lolRAuML3PfPhztO9MfdiGA6wAC3w4AAuuRQEvxUkpRRrID-TYE",
-        "CAACAgIAAxkBAAEBL99n6lkBOEfehT01DDi-_qOVQT5KfwACGxMAAlqS2EhjB6Z1XtCrlzYE",
-        "CAACAgIAAxkBAAEBL-Nn6lkZ7MFhFH7SsrWG0-RepGg9iQAC1AwAAnqLoEieLyIklDO8mzYE",
-        "CAACAgIAAxkBAAEBL-1n6lmoCFPLVdwdJESnIDEE9Rz__AACrQ4AAuR6QUt_BjUr8hmSxjYE"
-    ],
-
-    "errors": [
-        "CAACAgIAAxkBAAEBL-Fn6lkQPCM5BJxta5iUILFblCL_pgACZg8AAlGwsEiUHH3OCPuZqTYE",
-        "CAACAgIAAxkBAAEBL-Vn6lluax4ZbJbK-WtvoYcrpp4C9QACYw4AAgtaoEg7Cb-9icYZzTYE",
-        "CAACAgIAAxkBAAEBL-dn6lmHFcSeAneJnnlze5VmVyRg6QACYQ8AAp5wmEhb4tJtlpFD-TYE"
-    ],
-
     "experiments": "CAACAgIAAxkBAAEBL-ln6lmTrqWYAbh8UyUmAAEdBdFmXI8AAnIPAAIkWqBIiNZAMrUUvc42BA",
 
     "reminders": [
@@ -166,17 +152,23 @@ def init_user_data(user_id):
             "correct_questions": set()               # Пустое множество для ID правильных ответов
         }
 
-
+# Получаем рандомный стикео
 def get_random_sticker(sticker_type):
     try:
+        # Проверяем, существует ли запрошенный тип стикера в словаре STICKERS
         if sticker_type not in STICKERS:
             return None
 
+        # Получаем стикер или список стикеров по ключу
         sticker = STICKERS[sticker_type]
         if isinstance(sticker, list):
             return choice(sticker)
+
+        # Иначе возвращаем единственный стикер
         return sticker
+
     except Exception as e:
+        # Логируем ошибку, если что-то пошло не так
         print(f"Error getting sticker: {e}")
         return None
 
@@ -233,40 +225,66 @@ async def handle_topic_selection(callback: CallbackQuery):
 
 @router.message(lambda message: message.text == "📚 Задачи")
 async def send_task_topics(message: types.Message):
-    user_id = message.from_user.id
-    user_states[user_id] = STATE_TASKS
+    user_id = message.from_user.id      # Получаем ID пользователя
+    user_states[user_id] = STATE_TASKS  # Устанавливаем состояние пользователя в режим решения задач
 
+    # Собираем уникальные темы задач из данных
     topics = set(task["topic"] for task in tasks_data["tasks"])
+
+    # Создаем инлайн-клавиатуру
     keyboard = InlineKeyboardBuilder()
+
+    # Добавляем кнопку для каждой темы
     for topic in topics:
+
+        # Callback_data содержит префикс и название темы
         keyboard.button(text=topic, callback_data=f"task_topic_{topic}")
+
+    # Настраиваем клавиатуру (1 кнопка в ряд)
     keyboard.adjust(1)
     await message.answer("Выбери тему задач:", reply_markup=keyboard.as_markup())
 
 
 @router.callback_query(lambda callback: callback.data.startswith("task_topic_"))
 async def handle_task_topic_selection(callback: CallbackQuery):
+
+    # Извлекаем название темы из callback_data
     topic = callback.data.replace("task_topic_", "")
     user_id = callback.from_user.id
+
+    # Инициализируем данные пользователя (если еще не инициализированы)
     init_user_data(user_id)
+
+    # Фильтруем задачи по выбранной теме
     tasks = [task for task in tasks_data["tasks"] if task["topic"] == topic]
 
+    # Если задачи не найдены
     if not tasks:
         await callback.message.answer("❌ Задачи не найдены.")
         return
 
+    # Сохраняем задачи и текущий индекс для пользователя
     user_tasks[user_id] = {"tasks": tasks, "current_task_index": 0}
+
+    # Устанавливаем состояние в режим решения задач
     user_states[user_id] = STATE_TASKS
+
+    # Отправляем первую задачу
     await send_next_task(callback.message, user_id)
     await callback.answer()
 
 
 async def send_next_task(message: types.Message, user_id: int):
+
+    # Проверяем, есть ли задачи у пользователя
     if user_id not in user_tasks:
         await message.answer("❌ Ошибка: задачи не найдены.")
         return
 
+    # Получаем состояние пользователя
     user_state = user_tasks[user_id]
+
+    # Берем текущую задачу по индексу
     task = user_state["tasks"][user_state["current_task_index"]]
 
     await message.answer(f"📚 <b>Задача:</b>\n{task['question']}", parse_mode="HTML")
@@ -274,25 +292,43 @@ async def send_next_task(message: types.Message, user_id: int):
 
 async def handle_task_answer(message: types.Message):
     user_id = message.from_user.id
+    # Инициализируем данные пользователя
     init_user_data(user_id)
 
+    # Проверяем, что пользователь в режиме решения задач
     if user_id not in user_tasks:
         await message.answer("❌ Ты не решаешь задачи сейчас.")
         return
 
+    # Получаем текущую задачу
     user_state = user_tasks[user_id]
     task = user_state["tasks"][user_state["current_task_index"]]
+
+    # Создаем уникальный ID задачи для отслеживания решенных
     task_id = f"{task['topic']}_{task['question'][:50]}"
 
     try:
+
+        # Парсим ответ пользователя как число
         user_answer = float(message.text.strip())
+
+        # Сравниваем с правильным ответом (с учетом погрешности)
         is_correct = abs(user_answer - task["answer"]) < 0.001
 
+        # Если ответ правильный и задача еще не была решена
         if is_correct and task_id not in user_solved_items[user_id]["solved_tasks"]:
+
+            # Увеличиваем счетчик решенных задач
             user_stats[user_id]["solved_tasks"] += 1
+
+            # Добавляем задачу в решенные
             user_solved_items[user_id]["solved_tasks"].add(task_id)
+
+            # Проверяем и выдаем бейджи при необходимости
             await check_and_award_badges(message, user_id)
         else:
+
+            # Если ответ неверный - обновляем статистику по слабым темам
             if not is_correct:
                 update_weak_topics(user_id, task["topic"])
 
