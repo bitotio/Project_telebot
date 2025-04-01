@@ -358,17 +358,22 @@ async def handle_task_answer(message: types.Message):
 
 @router.message(lambda message: message.text == "📊 Тесты")
 async def send_test_topics(message: types.Message):
-    user_id = message.from_user.id
-    init_user_data(user_id)
+
+    user_id = message.from_user.id      # Инициализация данных пользователя и установка состояния "тестирование"
+    init_user_data(user_id)             # Создает записи в user_stats и user_solved_items при первом использовании
     user_states[user_id] = STATE_TESTS  # Устанавливаем состояние тестов
 
+    # Получаем список доступных тем для тестов
     topics = get_topics()
     if not topics:
         await message.answer("Тесты пока не загружены.")
         return
 
+    # Создаем интерактивную клавиатуру с темами тестов
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for index, topic in enumerate(topics):
+
+        # Каждая кнопка содержит название темы и передает ее индекс в callback_data
         button = InlineKeyboardButton(text=topic, callback_data=f"test_topic_{index}")
         keyboard.inline_keyboard.append([button])
 
@@ -377,18 +382,20 @@ async def send_test_topics(message: types.Message):
 
 @router.callback_query(lambda callback: callback.data.startswith("test_topic_"))
 async def handle_test_topic_selection(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    init_user_data(user_id)  # Инициализируем данные
+    user_id = callback.from_user.id     # Обработка выбора темы теста пользователем
+    init_user_data(user_id)             # Инициализируем данные
 
+    # Извлекаем индекс темы из callback_data
     topic_index = int(callback.data.replace("test_topic_", ""))
     topics = get_topics()
 
+    # Проверка валидности индекса темы
     if topic_index < 0 or topic_index >= len(topics):
         await callback.message.answer("❌ Ошибка: тема не найдена.")
         return
 
     topic = topics[topic_index]
-    tests = get_tests_by_topic(topic)
+    tests = get_tests_by_topic(topic)   # Получаем вопросы по выбранной теме
 
     if not tests:
         await callback.message.answer("❌ В этой теме пока нет тестов.")
@@ -396,18 +403,21 @@ async def handle_test_topic_selection(callback: CallbackQuery):
 
     # Инициализируем прогресс теста
     user_test_progress[user_id] = {
-        "topic": topic,
-        "tests": tests,
-        "current_question_index": 0,
-        "correct_answers": 0
+        "topic": topic,                 # Текущая тема теста
+        "tests": tests,                 # Список вопросов
+        "current_question_index": 0,    # Индекс текущего вопроса
+        "correct_answers": 0            # Счетчик правильных ответов
     }
-    user_states[user_id] = STATE_TESTS
+    user_states[user_id] = STATE_TESTS  # Подтверждаем состояние "тестирование"
 
+    # Начинаем тест с первого вопроса
     await send_next_test_question(callback.message, user_id)
     await callback.answer()
 
 
 async def send_next_test_question(message: types.Message, user_id: int):
+
+    # Отправка следующего вопроса теста
     if user_id not in user_test_progress:
         await message.answer("❌ Начните тест заново, выбрав тему из меню.")
         return
@@ -416,15 +426,19 @@ async def send_next_test_question(message: types.Message, user_id: int):
     tests = progress["tests"]
     current_index = progress["current_question_index"]
 
+    # Проверка завершения теста
     if current_index >= len(tests):
-        # Завершение теста
+
+        # Расчет результатов теста
         correct = progress["correct_answers"]
         total = len(tests)
         percentage = round(100 * correct / total) if total > 0 else 0
 
+        # Обновление статистики пользователя
         user_stats[user_id]["tests_taken"] = user_stats[user_id].get("tests_taken", 0) + 1
-        await check_and_award_badges(message, user_id)
+        await check_and_award_badges(message, user_id)  # Проверка на получение бейджей
 
+        # Формирование сообщения с результатами
         response = (
             f"🎉 Тест завершен!\n"
             f"Правильных ответов: {correct}/{total} ({percentage}%)\n\n"
@@ -436,36 +450,39 @@ async def send_next_test_question(message: types.Message, user_id: int):
         )
 
         await message.answer(response, reply_markup=get_main_menu_keyboard())
-        del user_test_progress[user_id]
+        del user_test_progress[user_id]            # Очищаем данные теста
         return
 
-    # Продолжение теста
-    test = tests[current_index]
-    user_tests[user_id] = test
+    test = tests[current_index]                    # Получение текущего вопроса
+    user_tests[user_id] = test                     # Сохраняем текущий вопрос
 
+    # Форматирование вопроса с номером
     question_text = f"📊 <b>Вопрос {current_index + 1}:</b>\n{test['question']}"
     await message.answer(question_text, parse_mode="HTML")
 
+    # Создание клавиатуры с вариантами ответов
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=option, callback_data=f"answer_{i}")]
-        for i, option in enumerate(test["options"])
+        for i, option in enumerate(test["options"]) # Нумеруем варианты ответов
     ])
     await message.answer("Выбери вариант ответа:", reply_markup=keyboard)
 
 
 @router.callback_query(lambda callback: callback.data.startswith("answer_"))
 async def handle_answer_selection(callback: CallbackQuery):
+
+    # Обработка выбора ответа пользователем
     user_id = callback.from_user.id
 
-    # Проверяем активность теста
+    # Проверка активного теста
     if user_id not in user_tests or user_id not in user_test_progress:
         await callback.answer("Ошибка! Вопрос не найден.", show_alert=True)
         return
 
     test = user_tests[user_id]
     progress = user_test_progress[user_id]
-    user_answer_index = int(callback.data.split("_")[1])
-    question_id = f"{test['question'][:50]}"
+    user_answer_index = int(callback.data.split("_")[1])    # Извлекаем индекс ответа
+    question_id = f"{test['question'][:50]}"                # Создаем идентификатор вопроса
 
     # Проверяем правильность ответа
     is_correct = user_answer_index in test["answer"]
@@ -494,7 +511,7 @@ async def handle_answer_selection(callback: CallbackQuery):
         user_test_progress[user_id]["current_question_index"] += 1
         await send_next_test_question(callback.message, user_id)
 
-    await callback.answer()
+    await callback.answer()     # Завершение обработки callback
 
 
 @router.callback_query(lambda callback: callback.data == "next_question")
@@ -530,10 +547,10 @@ async def handle_next_question(callback: CallbackQuery):
 
 async def check_and_award_badges(message: types.Message, user_id: int):
     if user_id not in user_stats:
-        return
+        return                      # Если статистики пользователя нет - выходим
 
     stats = user_stats[user_id]
-    badges = stats["badges"]
+    badges = stats["badges"]        # Получаем текущие бейджи пользователя
 
     # Бейдж за решение 10 тестов
     if stats["correct_tests"] >= 10 and "Решил 10 тестов" not in badges:
@@ -563,6 +580,8 @@ async def check_and_award_badges(message: types.Message, user_id: int):
 @router.message(Command("progress"))
 @router.message(lambda m: m.text == "📈 Прогресс")
 async def show_progress(message: types.Message):
+
+    # Отображает прогресс пользователя по задачам и тестам
     user_id = message.from_user.id
     init_user_data(user_id)
 
@@ -590,6 +609,7 @@ async def show_progress(message: types.Message):
     # Формируем список бейджей
     badges_text = "\n\n🏅 <b>Ваши бейджи:</b>\n" + ", ".join(stats.get("badges", ["Пока нет"])) if stats.get("badges") else ""
 
+    # Формируем полное сообщение с прогрессом
     response = (
         "📊 <b>Ваш прогресс:</b>\n\n"
         f"<b>Задачи:</b>\n{tasks_progress}\n"
@@ -602,7 +622,7 @@ async def show_progress(message: types.Message):
 
     await message.answer(response, parse_mode="HTML")
 
-    await message.answer_sticker(sticker=get_random_sticker("progress"))
+    await message.answer_sticker(sticker=get_random_sticker("progress"))    # Отправляем мотивирующий стикер
 
 
 @router.message(Command("recommend"))
@@ -618,6 +638,8 @@ async def handle_recommend_button(message: types.Message):
 
 
 async def give_recommendation(message: types.Message, keyboard=None):
+
+    # Формирует персонализированные рекомендации по слабым темам
     user_id = message.from_user.id
     init_user_data(user_id)
 
@@ -655,7 +677,7 @@ async def delete_recommend_history(callback: CallbackQuery):
     # Очищаем историю рекомендаций
     user_stats[user_id]["weak_topics"] = []
 
-    # Создаем новую клавиатуру (можно убрать после удаления)
+    # Создаем новую клавиатуру (кнопка удаления рекомендаций)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Удалить историю рекомендаций", callback_data="delete_recommend_history")]
     ])
@@ -667,17 +689,18 @@ async def delete_recommend_history(callback: CallbackQuery):
 
 
 def update_weak_topics(user_id, topic):
+
+    # Обновляет статистику по слабым темам пользователя
     if not topic:
-        return
+        return                                  # Если тема не указана - выходим
 
     # Инициализация данных пользователя (если ещё нет)
     if user_id not in user_stats:
-        init_user_data(user_id)
+        init_user_data(user_id)                 # Инициализация при первом обращении
 
     # Инициализация weak_topics (если ещё нет)
     if "weak_topics" not in user_stats[user_id]:
-        user_stats[user_id]["weak_topics"] = {}
-
+        user_stats[user_id]["weak_topics"] = {} # Инициализация словаря тем
     # Увеличиваем счётчик ошибок для темы
     if topic in user_stats[user_id]["weak_topics"]:
         user_stats[user_id]["weak_topics"][topic] += 1
@@ -687,6 +710,8 @@ def update_weak_topics(user_id, topic):
 
 @router.message(lambda message: message.text == "🔬 3D-Эксперименты")
 async def handle_3d_experiments(message: types.Message):
+
+    # Открывает раздел с 3D-экспериментами
     await message.answer(
         "Лаборатория 3D-экспериментов:\n\n"
         "Здесь вы можете взаимодействовать с интерактивными моделями",
@@ -704,6 +729,8 @@ async def handle_3d_experiments(message: types.Message):
 
 @router.message(lambda message: message.text == "⬅️ Назад")
 async def handle_back(message: types.Message):
+
+    # Возвращает пользователя в главное меню
     await message.answer(
         "Возвращаемся...",
         reply_markup=get_main_menu_keyboard()
@@ -718,6 +745,8 @@ async def set_reminder(message: types.Message):
 
 
 async def schedule_reminder(user_id, remind_time):
+
+    # Планирует отправку напоминания в указанное время
     now = datetime.now()
     delay = (remind_time - now).total_seconds()
     await asyncio.sleep(delay)
@@ -727,12 +756,17 @@ async def schedule_reminder(user_id, remind_time):
 
 
 async def handle_reminder_time(message: types.Message):
+
+    # Обрабатывает введенное пользователем время напоминания
     user_id = message.from_user.id
     try:
+
+        # Парсим введенное время
         remind_time = datetime.strptime(message.text.strip(), "%H:%M").time()
         now = datetime.now()
         remind_datetime = datetime.combine(now.date(), remind_time)
 
+        # Если время уже прошло сегодня - ставим на завтра
         if remind_datetime < now:
             remind_datetime += timedelta(days=1)
 
@@ -753,6 +787,8 @@ async def handle_reminder_time(message: types.Message):
 
 @router.message(lambda message: message.text == "🔗 Ссылки")
 async def send_links(message: types.Message):
+
+    # Отправляет пользователю список полезных ссылок
     links = [
         "https://fipi.ru/ege",
         "https://ege.sdamgia.ru/",
@@ -769,17 +805,19 @@ async def send_links(message: types.Message):
 
 @router.message()
 async def process_user_message(message: types.Message):
+
+    # Обрабатывает все нераспознанные сообщения
     user_id = message.from_user.id
     user_state = user_states.get(user_id, STATE_NONE)
 
     if user_state == STATE_TASKS:
-        await handle_task_answer(message)
+        await handle_task_answer(message)   # Режим решения задач
     elif user_state == STATE_TESTS:
         # Если пользователь в режиме тестов, но пишет текст вместо выбора варианта
         await message.answer(
             "ℹ️ Пожалуйста, выберите тему теста через меню или используйте кнопки для ответа на вопросы теста.")
     elif user_state == "setting_reminder":
-        await handle_reminder_time(message)
+        await handle_reminder_time(message) # Режим установки напоминания
     else:
         await message.answer("ℹ️ Я не понимаю эту команду. Пожалуйста, выбери действие из меню ниже:",
                              reply_markup=get_main_menu_keyboard())
