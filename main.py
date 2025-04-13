@@ -60,6 +60,7 @@ with open(TESTS_FILE, "r", encoding="utf-8") as f:
     tests_data = json.load(f)["tests"] # Тестовые вопросы (ключ "tests")
 
 
+# ЗАГРУЗКА СТИКЕРОВ
 STICKERS = {
     "welcome": "CAACAgIAAxkBAAEBL-Nn6lkZ7MFhFH7SsrWG0-RepGg9iQAC1AwAAnqLoEieLyIklDO8mzYE",
 
@@ -173,7 +174,7 @@ def get_random_sticker(sticker_type):
         return None
 
 
-# Хендлеры
+# ЕДИНОЙ БЛОК РОУТЕРОВ И ХЭНДЛЕРОВ
 @router.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id # Получаем ID пользователя
