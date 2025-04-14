@@ -327,33 +327,15 @@ async def handle_task_selection(callback: CallbackQuery):
     if 0 <= task_number < len(tasks):
         # Обновляем текущий индекс задачи
         user_state["current_task_index"] = task_number
+        user_state["awaiting_answer"] = True  # Флаг ожидания ответа
+
         task = tasks[task_number]
 
-        # Отправляем задачу пользователю
+        # Отправляем только выбранную задачу
         await callback.message.answer(
-            f"📚 <b>Задача {task_number + 1}:</b>\n{task['question']}",
+            f"📚 <b>Задача {task_number + 1}:</b>\n{task['question']}\n\n"
+            "Введите ваш ответ числом:",
             parse_mode="HTML"
-        )
-
-        # Добавляем кнопки навигации
-        keyboard = InlineKeyboardBuilder()
-
-        if task_number > 0:
-            keyboard.button(
-                text="⬅️ Предыдущая",
-                callback_data=f"task_{task_number}"  # Номер предыдущей задачи
-            )
-
-        if task_number < len(tasks) - 1:
-            keyboard.button(
-                text="Следующая ➡️",
-                callback_data=f"task_{task_number + 2}"  # Номер следующей задачи
-            )
-
-        keyboard.adjust(2)
-        await callback.message.answer(
-            "Выберите действие:",
-            reply_markup=keyboard.as_markup()
         )
     else:
         await callback.message.answer("❌ Эта задача не существует.")
@@ -378,59 +360,64 @@ async def send_next_task(message: types.Message, user_id: int):
 
 async def handle_task_answer(message: types.Message):
     user_id = message.from_user.id
-    # Инициализируем данные пользователя
-    init_user_data(user_id)
 
-    # Проверяем, что пользователь в режиме решения задач
-    if user_id not in user_tasks:
-        await message.answer("❌ Ты не решаешь задачи сейчас.")
+    # Проверяем, что пользователь в режиме решения задач и ожидает ответ
+    if user_id not in user_tasks or not user_tasks[user_id].get("awaiting_answer"):
+        await message.answer("❌ Сначала выберите задачу из меню.")
         return
 
-    # Получаем текущую задачу
     user_state = user_tasks[user_id]
     task = user_state["tasks"][user_state["current_task_index"]]
-
-    # Создаем уникальный ID задачи для отслеживания решенных
-    task_id = f"{task['topic']}_{task['question'][:50]}"
 
     try:
         # Парсим ответ пользователя как число
         user_answer = float(message.text.strip())
-
-        # Сравниваем с правильным ответом (с учетом погрешности)
         is_correct = abs(user_answer - task["answer"]) < 0.001
 
-        # Если ответ правильный и задача еще не была решена
+        # Формируем ответ с проверкой
+        response = (
+            f"✅ Правильный ответ!\n\n<b>Решение:</b> {task['solution']}"
+            if is_correct
+            else f"❌ Неправильно. Правильный ответ: {task['answer']}\n\n<b>Решение:</b> {task['solution']}"
+        )
+        await message.answer(response, parse_mode="HTML")
+
+        # Обновляем статистику
+        task_id = f"{task['topic']}_{task['question'][:50]}"
         if is_correct and task_id not in user_solved_items[user_id]["solved_tasks"]:
             user_stats[user_id]["solved_tasks"] += 1
             user_solved_items[user_id]["solved_tasks"].add(task_id)
-
-            # Проверяем и выдаем бейджи при необходимости
             await check_and_award_badges(message, user_id)
-        else:
-            if not is_correct:
-                update_weak_topics(user_id, task["topic"])
+        elif not is_correct:
+            update_weak_topics(user_id, task["topic"])
 
-        response = (
-            f"✅ Правильный ответ!\n\n<b>Решение:</b> {task['solution']}" if is_correct
-            else f"❌ Неправильно. Правильный ответ: {task['answer']}\n\n<b>Решение:</b> {task['solution']}"
+        # Сбрасываем флаг ожидания ответа
+        user_state["awaiting_answer"] = False
+
+        # Предлагаем выбрать следующее действие
+        keyboard = InlineKeyboardBuilder()
+
+        # Кнопка следующей задачи (если есть)
+        if user_state["current_task_index"] < len(user_state["tasks"]) - 1:
+            keyboard.button(
+                text="➡️ Следующая задача",
+                callback_data=f"task_{user_state['current_task_index'] + 2}"  # +1 для номера задачи
+            )
+
+        # Кнопка выбора другой задачи
+        keyboard.button(
+            text="📋 Выбрать другую задачу",
+            callback_data=f"task_topic_{task['topic']}"
         )
 
-        # Отправляем результат текущей задачи
-        await message.answer(response, parse_mode="HTML")
-
-        # Увеличиваем счетчик задач
-        user_state["current_task_index"] += 1
-
-        # Проверяем, есть ли еще задачи
-        if user_state["current_task_index"] < len(user_state["tasks"]):
-            await send_next_task(message, user_id)
-        else:
-            # await message.answer("🎉 Ты решил все задачи!", reply_markup=get_main_menu_keyboard())
-            del user_tasks[user_id]
+        keyboard.adjust(1)
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=keyboard.as_markup()
+        )
 
     except ValueError:
-        await message.answer("❌ Введи числовой ответ.")
+        await message.answer("❌ Пожалуйста, введите числовой ответ.")
 
 
 @router.message(lambda message: message.text == "📊 Тесты")
