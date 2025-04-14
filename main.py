@@ -206,62 +206,82 @@ async def send_theory_menu(message: types.Message):
 
 @router.callback_query(lambda callback: callback.data.startswith("topic_"))
 async def handle_topic_selection(callback: CallbackQuery):
-
-    # Извлекаем номер темы из callback_data (формат "topic_<номер>")
-    topic_number = int(callback.data.split("_")[1])
+    # Извлекаем номер темы из callback_data (формат "topic_<номер>" или "topic_<номер>_<подтема>")
+    parts = callback.data.split("_")
+    topic_number = int(parts[1])
 
     # Ищем тему в theory_data по номеру
     selected_topic = next((t for t in theory_data["темы"] if t["номер"] == topic_number), None)
 
-    # Формируем ответ с названием и содержимым темы (HTML форматирование)
-    if selected_topic:
-        response = f"📘 <b>{selected_topic['название']}</b>\n\n{selected_topic['содержимое']}"
-        await callback.message.answer(response, parse_mode="HTML")
-    else:
+    if not selected_topic:
         await callback.message.answer("Тема не найдена.")
+        await callback.answer()
+        return
 
-    # Подтверждаем обработку callback (убирает "часики" в интерфейсе и "зависания")
+    # Если есть подтема в callback_data (формат "topic_<номер>_<индекс подтемы>")
+    if len(parts) > 2:
+        subtopic_index = int(parts[2])
+        if "подтемы" in selected_topic and 0 <= subtopic_index < len(selected_topic["подтемы"]):
+            subtopic = selected_topic["подтемы"][subtopic_index]
+            response = f"📘 <b>{selected_topic['название']}: {subtopic['название']}</b>\n\n{subtopic['содержимое']}"
+
+            # Добавляем кнопку "Назад к теме"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="← Назад к теме", callback_data=f"topic_{topic_number}")]
+            ])
+            await callback.message.answer(response, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await callback.message.answer("Подтема не найдена.")
+    else:
+        # Основная тема
+        response = f"📘 <b>{selected_topic['название']}</b>\n\n{selected_topic['содержимое']}"
+
+        # Если есть подтемы, добавляем кнопки для них
+        if "подтемы" in selected_topic and selected_topic["подтемы"]:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=subtopic["название"], callback_data=f"topic_{topic_number}_{i}")]
+                for i, subtopic in enumerate(selected_topic["подтемы"])
+            ])
+            await callback.message.answer(response, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await callback.message.answer(response, parse_mode="HTML")
+
     await callback.answer()
 
 
 @router.message(lambda message: message.text == "📚 Задачи")
 async def send_task_topics(message: types.Message):
-    user_id = message.from_user.id      # Получаем ID пользователя
-    user_states[user_id] = STATE_TASKS  # Устанавливаем состояние пользователя в режим решения задач
+    user_id = message.from_user.id
+    user_states[user_id] = STATE_TASKS
 
-    # Собираем уникальные темы задач из данных
-    topics = set(task["topic"] for task in tasks_data["tasks"])
+    # Собираем темы с количеством задач
+    topic_counts = {}
+    for task in tasks_data["tasks"]:
+        topic_counts[task["topic"]] = topic_counts.get(task["topic"], 0) + 1
 
-    # Создаем инлайн-клавиатуру
+    # Создаем инлайн-клавиатуру с нумерацией задач
     keyboard = InlineKeyboardBuilder()
+    for topic, count in topic_counts.items():
+        keyboard.button(
+            text=f"{topic} ({count} задачи)",
+            callback_data=f"task_topic_{topic}"
+        )
 
-    # Добавляем кнопку для каждой темы
-    for topic in topics:
-
-        # Callback_data содержит префикс и название темы
-        keyboard.button(text=topic, callback_data=f"task_topic_{topic}")
-
-    # Настраиваем клавиатуру (1 кнопка в ряд)
     keyboard.adjust(1)
     await message.answer("Выбери тему задач:", reply_markup=keyboard.as_markup())
 
 
 @router.callback_query(lambda callback: callback.data.startswith("task_topic_"))
 async def handle_task_topic_selection(callback: CallbackQuery):
-
-    # Извлекаем название темы из callback_data
     topic = callback.data.replace("task_topic_", "")
     user_id = callback.from_user.id
-
-    # Инициализируем данные пользователя (если еще не инициализированы)
     init_user_data(user_id)
 
-    # Фильтруем задачи по выбранной теме
     tasks = [task for task in tasks_data["tasks"] if task["topic"] == topic]
 
-    # Если задачи не найдены
     if not tasks:
         await callback.message.answer("❌ Задачи не найдены.")
+        await callback.answer()
         return
 
     # Сохраняем задачи и текущий индекс для пользователя
@@ -270,13 +290,78 @@ async def handle_task_topic_selection(callback: CallbackQuery):
     # Устанавливаем состояние в режим решения задач
     user_states[user_id] = STATE_TASKS
 
-    # Отправляем первую задачу
-    await send_next_task(callback.message, user_id)
+    # Отправляем задачи с кнопками
+    await send_task_with_buttons(callback.message, user_id, tasks)
+    await callback.answer()
+
+
+async def send_task_with_buttons(message: types.Message, user_id: int, tasks):
+    keyboard = InlineKeyboardBuilder()
+
+    # Создаем кнопки для каждой задачи с номерами
+    for i, task in enumerate(tasks, start=1):
+        # Кнопка с номером задачи
+        keyboard.button(text=f"Задача {i}", callback_data=f"task_{i}")
+
+    # Настроим кнопки в ряд (например, 2 кнопки в строку)
+    keyboard.adjust(2)
+    await message.answer("Выберите задачу:", reply_markup=keyboard.as_markup())
+
+
+@router.callback_query(lambda callback: callback.data.startswith("task_"))
+async def handle_task_selection(callback: CallbackQuery):
+    # Извлекаем номер задачи из callback_data
+    task_number = int(callback.data.split("_")[1]) - 1  # Преобразуем в индекс (начинается с 0)
+
+    user_id = callback.from_user.id
+    user_state = user_tasks.get(user_id)
+
+    if not user_state:
+        await callback.message.answer("❌ Задачи не найдены.")
+        await callback.answer()
+        return
+
+    tasks = user_state["tasks"]
+
+    # Проверяем, что задача существует в списке
+    if 0 <= task_number < len(tasks):
+        # Обновляем текущий индекс задачи
+        user_state["current_task_index"] = task_number
+        task = tasks[task_number]
+
+        # Отправляем задачу пользователю
+        await callback.message.answer(
+            f"📚 <b>Задача {task_number + 1}:</b>\n{task['question']}",
+            parse_mode="HTML"
+        )
+
+        # Добавляем кнопки навигации
+        keyboard = InlineKeyboardBuilder()
+
+        if task_number > 0:
+            keyboard.button(
+                text="⬅️ Предыдущая",
+                callback_data=f"task_{task_number}"  # Номер предыдущей задачи
+            )
+
+        if task_number < len(tasks) - 1:
+            keyboard.button(
+                text="Следующая ➡️",
+                callback_data=f"task_{task_number + 2}"  # Номер следующей задачи
+            )
+
+        keyboard.adjust(2)
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=keyboard.as_markup()
+        )
+    else:
+        await callback.message.answer("❌ Эта задача не существует.")
+
     await callback.answer()
 
 
 async def send_next_task(message: types.Message, user_id: int):
-
     # Проверяем, есть ли задачи у пользователя
     if user_id not in user_tasks:
         await message.answer("❌ Ошибка: задачи не найдены.")
@@ -309,7 +394,6 @@ async def handle_task_answer(message: types.Message):
     task_id = f"{task['topic']}_{task['question'][:50]}"
 
     try:
-
         # Парсим ответ пользователя как число
         user_answer = float(message.text.strip())
 
@@ -318,18 +402,12 @@ async def handle_task_answer(message: types.Message):
 
         # Если ответ правильный и задача еще не была решена
         if is_correct and task_id not in user_solved_items[user_id]["solved_tasks"]:
-
-            # Увеличиваем счетчик решенных задач
             user_stats[user_id]["solved_tasks"] += 1
-
-            # Добавляем задачу в решенные
             user_solved_items[user_id]["solved_tasks"].add(task_id)
 
             # Проверяем и выдаем бейджи при необходимости
             await check_and_award_badges(message, user_id)
         else:
-
-            # Если ответ неверный - обновляем статистику по слабым темам
             if not is_correct:
                 update_weak_topics(user_id, task["topic"])
 
@@ -346,11 +424,9 @@ async def handle_task_answer(message: types.Message):
 
         # Проверяем, есть ли еще задачи
         if user_state["current_task_index"] < len(user_state["tasks"]):
-            # Если задачи еще есть, отправляем следующую
             await send_next_task(message, user_id)
         else:
-            # Если задачи закончились - сообщаем об этом
-            await message.answer("🎉 Ты решил все задачи!", reply_markup=get_main_menu_keyboard())
+            # await message.answer("🎉 Ты решил все задачи!", reply_markup=get_main_menu_keyboard())
             del user_tasks[user_id]
 
     except ValueError:
