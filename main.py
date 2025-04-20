@@ -60,6 +60,7 @@ with open(TESTS_FILE, "r", encoding="utf-8") as f:
     tests_data = json.load(f)["tests"] # Тестовые вопросы (ключ "tests")
 
 
+# ЗАГРУЗКА СТИКЕРОВ
 STICKERS = {
     "welcome": "CAACAgIAAxkBAAEBL-Nn6lkZ7MFhFH7SsrWG0-RepGg9iQAC1AwAAnqLoEieLyIklDO8mzYE",
 
@@ -173,7 +174,7 @@ def get_random_sticker(sticker_type):
         return None
 
 
-# Хендлеры
+# ЕДИНОЙ БЛОК РОУТЕРОВ И ХЭНДЛЕРОВ
 @router.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id # Получаем ID пользователя
@@ -205,62 +206,84 @@ async def send_theory_menu(message: types.Message):
 
 @router.callback_query(lambda callback: callback.data.startswith("topic_"))
 async def handle_topic_selection(callback: CallbackQuery):
-
-    # Извлекаем номер темы из callback_data (формат "topic_<номер>")
-    topic_number = int(callback.data.split("_")[1])
+    # Извлекаем номер темы из callback_data (формат "topic_<номер>" или "topic_<номер>_<подтема>")
+    parts = callback.data.split("_")
+    topic_number = int(parts[1])
 
     # Ищем тему в theory_data по номеру
     selected_topic = next((t for t in theory_data["темы"] if t["номер"] == topic_number), None)
 
-    # Формируем ответ с названием и содержимым темы (HTML форматирование)
-    if selected_topic:
-        response = f"📘 <b>{selected_topic['название']}</b>\n\n{selected_topic['содержимое']}"
-        await callback.message.answer(response, parse_mode="HTML")
-    else:
+    if not selected_topic:
         await callback.message.answer("Тема не найдена.")
+        await callback.answer()
+        return
 
-    # Подтверждаем обработку callback (убирает "часики" в интерфейсе и "зависания")
+    # Если есть подтема в callback_data (формат "topic_<номер>_<индекс подтемы>")
+    if len(parts) > 2:
+        subtopic_index = int(parts[2])
+        if "подтемы" in selected_topic and 0 <= subtopic_index < len(selected_topic["подтемы"]):
+            subtopic = selected_topic["подтемы"][subtopic_index]
+            response = f"📘 <b>{selected_topic['название']}: {subtopic['название']}</b>\n\n{subtopic['содержимое']}"
+
+            # Добавляем кнопку "Назад к теме"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="← Назад к теме", callback_data=f"topic_{topic_number}")]
+            ])
+            await callback.message.answer(response, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await callback.message.answer("Подтема не найдена.")
+    else:
+        # Основная тема
+        response = f"📘 <b>{selected_topic['название']}</b>\n\n{selected_topic['содержимое']}"
+
+        # Если есть подтемы, добавляем кнопки для них
+        if "подтемы" in selected_topic and selected_topic["подтемы"]:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=subtopic["название"], callback_data=f"topic_{topic_number}_{i}")]
+                for i, subtopic in enumerate(selected_topic["подтемы"])
+            ])
+            await callback.message.answer(response, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await callback.message.answer(response, parse_mode="HTML")
+
     await callback.answer()
 
 
 @router.message(lambda message: message.text == "📚 Задачи")
 async def send_task_topics(message: types.Message):
-    user_id = message.from_user.id      # Получаем ID пользователя
-    user_states[user_id] = STATE_TASKS  # Устанавливаем состояние пользователя в режим решения задач
+    user_id = message.from_user.id
+    user_states[user_id] = STATE_TASKS
 
-    # Собираем уникальные темы задач из данных
-    topics = set(task["topic"] for task in tasks_data["tasks"])
+    # Подсчитываем задачи по темам
+    topic_counts = {}
+    for task in tasks_data["tasks"]:
+        topic = task["topic"]
+        topic_counts.setdefault(topic, 0)
+        topic_counts[topic] += 1
 
-    # Создаем инлайн-клавиатуру
+    # Клавиатура с темами
     keyboard = InlineKeyboardBuilder()
+    for topic, count in topic_counts.items():
+        keyboard.button(
+            text=f"{topic} ({count} задачи)",
+            callback_data=f"task_topic_{topic}"
+        )
 
-    # Добавляем кнопку для каждой темы
-    for topic in topics:
-
-        # Callback_data содержит префикс и название темы
-        keyboard.button(text=topic, callback_data=f"task_topic_{topic}")
-
-    # Настраиваем клавиатуру (1 кнопка в ряд)
     keyboard.adjust(1)
     await message.answer("Выбери тему задач:", reply_markup=keyboard.as_markup())
 
 
 @router.callback_query(lambda callback: callback.data.startswith("task_topic_"))
 async def handle_task_topic_selection(callback: CallbackQuery):
-
-    # Извлекаем название темы из callback_data
     topic = callback.data.replace("task_topic_", "")
     user_id = callback.from_user.id
-
-    # Инициализируем данные пользователя (если еще не инициализированы)
     init_user_data(user_id)
 
-    # Фильтруем задачи по выбранной теме
     tasks = [task for task in tasks_data["tasks"] if task["topic"] == topic]
 
-    # Если задачи не найдены
     if not tasks:
         await callback.message.answer("❌ Задачи не найдены.")
+        await callback.answer()
         return
 
     # Сохраняем задачи и текущий индекс для пользователя
@@ -269,13 +292,60 @@ async def handle_task_topic_selection(callback: CallbackQuery):
     # Устанавливаем состояние в режим решения задач
     user_states[user_id] = STATE_TASKS
 
-    # Отправляем первую задачу
-    await send_next_task(callback.message, user_id)
+    # Отправляем задачи с кнопками
+    await send_task_with_buttons(callback.message, user_id, tasks)
+    await callback.answer()
+
+
+async def send_task_with_buttons(message: types.Message, user_id: int, tasks):
+    keyboard = InlineKeyboardBuilder()
+
+    # Создаем кнопки для каждой задачи с номерами
+    for i, task in enumerate(tasks, start=1):
+        # Кнопка с номером задачи
+        keyboard.button(text=f"Задача {i}", callback_data=f"task_{i}")
+
+    # Настроим кнопки в ряд (например, 2 кнопки в строку)
+    keyboard.adjust(2)
+    await message.answer("Выберите задачу:", reply_markup=keyboard.as_markup())
+
+
+@router.callback_query(lambda callback: callback.data.startswith("task_"))
+async def handle_task_selection(callback: CallbackQuery):
+    # Извлекаем номер задачи из callback_data
+    task_number = int(callback.data.split("_")[1]) - 1  # Преобразуем в индекс (начинается с 0)
+
+    user_id = callback.from_user.id
+    user_state = user_tasks.get(user_id)
+
+    if not user_state:
+        await callback.message.answer("❌ Задачи не найдены.")
+        await callback.answer()
+        return
+
+    tasks = user_state["tasks"]
+
+    # Проверяем, что задача существует в списке
+    if 0 <= task_number < len(tasks):
+        # Обновляем текущий индекс задачи
+        user_state["current_task_index"] = task_number
+        user_state["awaiting_answer"] = True  # Флаг ожидания ответа
+
+        task = tasks[task_number]
+
+        # Отправляем только выбранную задачу
+        await callback.message.answer(
+            f"📚 <b>Задача {task_number + 1}:</b>\n{task['question']}\n\n"
+            "Введите ваш ответ числом:",
+            parse_mode="HTML"
+        )
+    else:
+        await callback.message.answer("❌ Эта задача не существует.")
+
     await callback.answer()
 
 
 async def send_next_task(message: types.Message, user_id: int):
-
     # Проверяем, есть ли задачи у пользователя
     if user_id not in user_tasks:
         await message.answer("❌ Ошибка: задачи не найдены.")
@@ -292,68 +362,64 @@ async def send_next_task(message: types.Message, user_id: int):
 
 async def handle_task_answer(message: types.Message):
     user_id = message.from_user.id
-    # Инициализируем данные пользователя
-    init_user_data(user_id)
 
-    # Проверяем, что пользователь в режиме решения задач
-    if user_id not in user_tasks:
-        await message.answer("❌ Ты не решаешь задачи сейчас.")
+    # Проверяем, что пользователь в режиме решения задач и ожидает ответ
+    if user_id not in user_tasks or not user_tasks[user_id].get("awaiting_answer"):
+        await message.answer("❌ Сначала выберите задачу из меню.")
         return
 
-    # Получаем текущую задачу
     user_state = user_tasks[user_id]
     task = user_state["tasks"][user_state["current_task_index"]]
 
-    # Создаем уникальный ID задачи для отслеживания решенных
-    task_id = f"{task['topic']}_{task['question'][:50]}"
-
     try:
-
         # Парсим ответ пользователя как число
         user_answer = float(message.text.strip())
-
-        # Сравниваем с правильным ответом (с учетом погрешности)
         is_correct = abs(user_answer - task["answer"]) < 0.001
 
-        # Если ответ правильный и задача еще не была решена
-        if is_correct and task_id not in user_solved_items[user_id]["solved_tasks"]:
-
-            # Увеличиваем счетчик решенных задач
-            user_stats[user_id]["solved_tasks"] += 1
-
-            # Добавляем задачу в решенные
-            user_solved_items[user_id]["solved_tasks"].add(task_id)
-
-            # Проверяем и выдаем бейджи при необходимости
-            await check_and_award_badges(message, user_id)
-        else:
-
-            # Если ответ неверный - обновляем статистику по слабым темам
-            if not is_correct:
-                update_weak_topics(user_id, task["topic"])
-
+        # Формируем ответ с проверкой
         response = (
-            f"✅ Правильный ответ!\n\n<b>Решение:</b> {task['solution']}" if is_correct
+            f"✅ Правильный ответ!\n\n<b>Решение:</b> {task['solution']}"
+            if is_correct
             else f"❌ Неправильно. Правильный ответ: {task['answer']}\n\n<b>Решение:</b> {task['solution']}"
         )
-
-        # Отправляем результат текущей задачи
         await message.answer(response, parse_mode="HTML")
 
-        # Увеличиваем счетчик задач
-        user_state["current_task_index"] += 1
+        # Обновляем статистику
+        task_id = f"{task['topic']}_{task['question'][:50]}"
+        if is_correct and task_id not in user_solved_items[user_id]["solved_tasks"]:
+            user_stats[user_id]["solved_tasks"] += 1
+            user_solved_items[user_id]["solved_tasks"].add(task_id)
+            await check_and_award_badges(message, user_id)
+        elif not is_correct:
+            update_weak_topics(user_id, task["topic"])
 
-        # Проверяем, есть ли еще задачи
-        if user_state["current_task_index"] < len(user_state["tasks"]):
-            # Если задачи еще есть, отправляем следующую
-            await send_next_task(message, user_id)
-        else:
-            # Если задачи закончились - сообщаем об этом
-            await message.answer("🎉 Ты решил все задачи!", reply_markup=get_main_menu_keyboard())
-            del user_tasks[user_id]
+        # Сбрасываем флаг ожидания ответа
+        user_state["awaiting_answer"] = False
+
+        # Предлагаем выбрать следующее действие
+        keyboard = InlineKeyboardBuilder()
+
+        # Кнопка следующей задачи (если есть)
+        if user_state["current_task_index"] < len(user_state["tasks"]) - 1:
+            keyboard.button(
+                text="➡️ Следующая задача",
+                callback_data=f"task_{user_state['current_task_index'] + 2}"  # +1 для номера задачи
+            )
+
+        # Кнопка выбора другой задачи
+        keyboard.button(
+            text="📋 Выбрать другую задачу",
+            callback_data=f"task_topic_{task['topic']}"
+        )
+
+        keyboard.adjust(1)
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=keyboard.as_markup()
+        )
 
     except ValueError:
-        await message.answer("❌ Введи числовой ответ.")
+        await message.answer("❌ Пожалуйста, введите числовой ответ.")
 
 
 @router.message(lambda message: message.text == "📊 Тесты")
@@ -416,8 +482,7 @@ async def handle_test_topic_selection(callback: CallbackQuery):
 
 
 async def send_next_test_question(message: types.Message, user_id: int):
-
-    # Отправка следующего вопроса теста
+    # Проверка, что есть активный прогресс теста
     if user_id not in user_test_progress:
         await message.answer("❌ Начните тест заново, выбрав тему из меню.")
         return
@@ -426,23 +491,19 @@ async def send_next_test_question(message: types.Message, user_id: int):
     tests = progress["tests"]
     current_index = progress["current_question_index"]
 
-    # Проверка завершения теста
+    # Если вопросов больше нет — тест завершён
     if current_index >= len(tests):
-
-        # Расчет результатов теста
         correct = progress["correct_answers"]
         total = len(tests)
         percentage = round(100 * correct / total) if total > 0 else 0
 
-        # Обновление статистики пользователя
         user_stats[user_id]["tests_taken"] = user_stats[user_id].get("tests_taken", 0) + 1
-        await check_and_award_badges(message, user_id)  # Проверка на получение бейджей
+        await check_and_award_badges(message, user_id)
 
-        # Формирование сообщения с результатами
         response = (
             f"🎉 Тест завершен!\n"
             f"Правильных ответов: {correct}/{total} ({percentage}%)\n\n"
-            "Выбери следующее действие:" if percentage > 0.5 else
+            "Выбери следующее действие:" if percentage > 50 else
             f"Тест завершен.\n"
             f"Правильных ответов: {correct}/{total} ({percentage}%)\n"
             "Нужно повторить материал!\n\n"
@@ -450,22 +511,86 @@ async def send_next_test_question(message: types.Message, user_id: int):
         )
 
         await message.answer(response, reply_markup=get_main_menu_keyboard())
-        del user_test_progress[user_id]            # Очищаем данные теста
+        del user_test_progress[user_id]
         return
 
-    test = tests[current_index]                    # Получение текущего вопроса
-    user_tests[user_id] = test                     # Сохраняем текущий вопрос
+    # Получаем текущий вопрос
+    test = tests[current_index]
+    user_tests[user_id] = test
 
-    # Форматирование вопроса с номером
-    question_text = f"📊 <b>Вопрос {current_index + 1}:</b>\n{test['question']}"
-    await message.answer(question_text, parse_mode="HTML")
+    # Формируем текст с вопросом и полными вариантами
+    variants_text = "\n".join(
+        [f"{i+1}️⃣ {option}" for i, option in enumerate(test["options"])]
+    )
 
-    # Создание клавиатуры с вариантами ответов
+    question_text = (
+        f"📊 <b>Вопрос {current_index + 1}:</b>\n"
+        f"{test['question']}\n\n"
+        f"<b>Варианты:</b>\n{variants_text}"
+    )
+
+    # Короткие кнопки с цифрами
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=option, callback_data=f"answer_{i}")]
-        for i, option in enumerate(test["options"]) # Нумеруем варианты ответов
+        [InlineKeyboardButton(text=f"{i+1}️⃣", callback_data=f"answer_{i}")]
+        for i in range(len(test["options"]))
     ])
-    await message.answer("Выбери вариант ответа:", reply_markup=keyboard)
+
+    await message.answer(question_text, parse_mode="HTML", reply_markup=keyboard)
+
+
+
+#
+# async def send_next_test_question(message: types.Message, user_id: int):
+#
+#     # Отправка следующего вопроса теста
+#     if user_id not in user_test_progress:
+#         await message.answer("❌ Начните тест заново, выбрав тему из меню.")
+#         return
+#
+#     progress = user_test_progress[user_id]
+#     tests = progress["tests"]
+#     current_index = progress["current_question_index"]
+#
+#     # Проверка завершения теста
+#     if current_index >= len(tests):
+#
+#         # Расчет результатов теста
+#         correct = progress["correct_answers"]
+#         total = len(tests)
+#         percentage = round(100 * correct / total) if total > 0 else 0
+#
+#         # Обновление статистики пользователя
+#         user_stats[user_id]["tests_taken"] = user_stats[user_id].get("tests_taken", 0) + 1
+#         await check_and_award_badges(message, user_id)  # Проверка на получение бейджей
+#
+#         # Формирование сообщения с результатами
+#         response = (
+#             f"🎉 Тест завершен!\n"
+#             f"Правильных ответов: {correct}/{total} ({percentage}%)\n\n"
+#             "Выбери следующее действие:" if percentage > 0.5 else
+#             f"Тест завершен.\n"
+#             f"Правильных ответов: {correct}/{total} ({percentage}%)\n"
+#             "Нужно повторить материал!\n\n"
+#             "Выбери следующее действие:"
+#         )
+#
+#         await message.answer(response, reply_markup=get_main_menu_keyboard())
+#         del user_test_progress[user_id]            # Очищаем данные теста
+#         return
+#
+#     test = tests[current_index]                    # Получение текущего вопроса
+#     user_tests[user_id] = test                     # Сохраняем текущий вопрос
+#
+#     # Форматирование вопроса с номером
+#     question_text = f"📊 <b>Вопрос {current_index + 1}:</b>\n{test['question']}"
+#     await message.answer(question_text, parse_mode="HTML")
+#
+#     # Создание клавиатуры с вариантами ответов
+#     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+#         [InlineKeyboardButton(text=option, callback_data=f"answer_{i}")]
+#         for i, option in enumerate(test["options"]) # Нумеруем варианты ответов
+#     ])
+#     await message.answer("Выбери вариант ответа:", reply_markup=keyboard)
 
 
 @router.callback_query(lambda callback: callback.data.startswith("answer_"))
@@ -580,8 +705,6 @@ async def check_and_award_badges(message: types.Message, user_id: int):
 @router.message(Command("progress"))
 @router.message(lambda m: m.text == "📈 Прогресс")
 async def show_progress(message: types.Message):
-
-    # Отображает прогресс пользователя по задачам и тестам
     user_id = message.from_user.id
     init_user_data(user_id)
 
@@ -591,38 +714,37 @@ async def show_progress(message: types.Message):
 
     stats = user_stats[user_id]
 
-    # Рассчитываем прогресс
-    tasks_progress = create_progress_bar(stats["solved_tasks"], stats["total_tasks"])
-    tests_progress = create_progress_bar(stats["correct_tests"], stats["total_questions"])
+    # Процент прогресса
+    tasks_total = stats["total_tasks"]
+    tasks_done = stats["solved_tasks"]
+    tests_total = stats["total_questions"]
+    tests_correct = stats["correct_tests"]
 
-    # Рассчитываем процент выполнения
-    if stats["total_tasks"] > 0:
-        tasks_percent = round(100 * stats["solved_tasks"] / stats["total_tasks"])
-    else:
-        tasks_percent = 0
+    tasks_percent = round(100 * tasks_done / tasks_total) if tasks_total > 0 else 0
+    tests_percent = round(100 * tests_correct / tests_total) if tests_total > 0 else 0
 
-    if stats["total_questions"] > 0:
-        tests_percent = round(100 * stats["correct_tests"] / stats["total_questions"])
-    else:
-        tests_percent = 0
+    # Прогресс-бары
+    tasks_progress = create_progress_bar(tasks_done, tasks_total)
+    tests_progress = create_progress_bar(tests_correct, tests_total)
 
-    # Формируем список бейджей
+    # Бейджи
     badges_text = "\n\n🏅 <b>Ваши бейджи:</b>\n" + ", ".join(stats.get("badges", ["Пока нет"])) if stats.get("badges") else ""
 
-    # Формируем полное сообщение с прогрессом
     response = (
         "📊 <b>Ваш прогресс:</b>\n\n"
         f"<b>Задачи:</b>\n{tasks_progress}\n"
-        f"Решено: {stats['solved_tasks']}/{stats['total_tasks']} ({tasks_percent}%)\n\n"
+        f"Правильных ответов: {tasks_done}/{tasks_total}\n\n"
         f"<b>Тесты:</b>\n{tests_progress}\n"
-        f"Правильных ответов: {stats['correct_tests']}/{stats['total_questions']} ({tests_percent}%)\n\n"
+        f"Правильных ответов: {tests_correct}/{tests_total}\n\n"
+        f"<b>Пройдено задач:</b> {stats.get('tasks_get', 0)}\n"
         f"<b>Пройдено тестов:</b> {stats.get('tests_taken', 0)}"
         f"{badges_text}"
     )
 
-    await message.answer(response, parse_mode="HTML")
 
-    await message.answer_sticker(sticker=get_random_sticker("progress"))    # Отправляем мотивирующий стикер
+    await message.answer(response, parse_mode="HTML")
+    await message.answer_sticker(sticker=get_random_sticker("progress"))
+
 
 
 @router.message(Command("recommend"))
